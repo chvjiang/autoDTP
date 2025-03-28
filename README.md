@@ -5,5 +5,5 @@ To utilize our dataset, you should setup your python environment as following.
 ```
 conda create -n autodtp python=3.9
 conda activate autodtp
-pip install nuscenes-devkit
+pip install nuscenes-devkit ultralytics
 ```

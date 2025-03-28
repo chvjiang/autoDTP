@@ -1,9 +1,18 @@
 from nuscenes.nuscenes import NuScenes
 from nuscenes.utils.geometry_utils import view_points
-from nuscenes.utils.data_classes import Box, LidarPointCloud
+from nuscenes.utils.data_classes import Box, LidarPointCloud, RadarPointCloud
 from pyquaternion import Quaternion
 import numpy as np
 import json 
+import os
+import argparse
+
+def check_point_in_box(box: Box, point):
+    center = np.array(box.center)
+    rotation = box.orientation.rotation_matrix
+    local_point = rotation.T @ (point - center)
+    size = np.array(box.wlh) / 2
+    return np.all(np.abs(local_point) <= size)
 
 def check_point_in_camera(nusc, cam_data, annotation):
     calib = nusc.get('calibrated_sensor', cam_data['calibrated_sensor_token'])
@@ -29,29 +38,48 @@ def check_point_in_camera(nusc, cam_data, annotation):
     except:
         return False
 
-def check_point_in_lidar(nusc, lidar_data, annotation):
-    points = nusc.get_sample_data(lidar_data['token'])[0]
-    pc = LidarPointCloud(points.T)
-    box = Box(
-        annotation['translation'], annotation['size'], Quaternion(annotation['rotation']),
-        name=annotation['category_name'], token=annotation['token']
-    )
-    inside = box.in_range(pc.points[:3, :])
-    return np.any(inside)
+def check_point_in_lidar(lidar_path, annotation):
+    pc = LidarPointCloud.from_file(lidar_path)
+    try:
+        points = pc.points.T[:,:3]
+        box = Box(
+            annotation['translation'], annotation['size'], Quaternion(annotation['rotation']),
+            name=annotation['category_name'], token=annotation['token']
+        )
+        inside = [check_point_in_box(box, point) for point in points]
+        return np.any(inside)
+    except:
+        return False
+
+def check_point_in_radar(radar_path, annotation):
+    pc = RadarPointCloud.from_file(radar_path)
+    try:
+        points = pc.points.T[:,:3]
+        box = Box(
+            annotation['translation'], annotation['size'], Quaternion(annotation['rotation']),
+            name=annotation['category_name'], token=annotation['token']
+        )
+        inside = [check_point_in_box(box, point) for point in points]
+        return np.any(inside)
+    except:
+        return False
 
 if __name__=='__main__':
-    nusc = NuScenes(version='v1.0-mini', dataroot='DATA/', verbose=True)
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--path', type=str, required=True, help='root path to NuScenes')
+    parser.add_argument('--version', type=str, default='v1.0-mini')
+    args = parser.parse_args()
 
-    with open('DATA/v1.0-mini/instance.json','r') as f:
+    nusc = NuScenes(version=args.version, dataroot=args.path, verbose=True)
+    with open(os.path.join(args.path, f'{args.version}/instance.json'),'r') as f:
         instances = json.load(f)
-    with open('DATA/v1.0-mini/category.json','r') as f:
+    with open(os.path.join(args.path, f'{args.version}/category.json'),'r') as f:
         categories = json.load(f)
 
     token2category = {c['token']:c['name'] for c in categories}
-    radar, lidar, front, back, total = 0, 0, 0, 0, 0
+    camera_lost, radar, lidar, front, back, total = 0, 0, 0, 0, 0, 0
     sensor_channels = ['CAM_FRONT', 'CAM_FRONT_LEFT', 'CAM_FRONT_RIGHT', 'CAM_BACK', 'CAM_BACK_LEFT', 'CAM_BACK_RIGHT',
-                    'RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT', 'LIDAR_TOP']
-    camera_lost, radar_lost = 0, 0
+                       'RADAR_FRONT', 'RADAR_FRONT_LEFT', 'RADAR_FRONT_RIGHT', 'RADAR_BACK_LEFT', 'RADAR_BACK_RIGHT', 'LIDAR_TOP']
 
     for instance in instances:
         if token2category[instance['category_token']] == 'human.pedestrian.adult':
@@ -68,19 +96,21 @@ if __name__=='__main__':
                         else:
                             b += 1
                 elif s.startswith('RADAR'):
-                    pass
+                    radar_data = nusc.get('sample_data', sample['data'][s])
+                    radar_data_path = os.path.join(args.path, radar_data['filename'])
+                    if check_point_in_radar(radar_data_path, annotation):
+                        r += 1
                 else:
                     lidar_data = nusc.get('sample_data', sample['data'][s])
-                    if check_point_in_lidar(nusc, lidar_data, annotation):
+                    lidar_data_path = os.path.join(args.path, lidar_data['filename'])
+                    if check_point_in_lidar(lidar_data_path, annotation):
                         lidar += 1
             front += (f!=0)
             back += (b!=0)
             radar += (r!=0)
             camera_lost += (f==0 and b==0)
-            radar_lost += (r==0)
     print(f'camera\tfront/total/instances:\t{front}/{total}/{len(instances)}')
     print(f'camera\tback/total/instances:\t{back}/{total}/{len(instances)}')
     print(f'camera\tlost/total/instances:\t{camera_lost}/{total}/{len(instances)}')
     print(f'radar\tradar/total/instances:\t{radar}/{total}/{len(instances)}')
-    print(f'radar\tlost/total/instances:\t{radar_lost}/{total}/{len(instances)}')
     print(f'lidar\tlidar/total/instances:\t{lidar}/{total}/{len(instances)}')

@@ -9,6 +9,7 @@ __pycache__/
 # data
 DATA/
 *.pt
+output/
 
 # Distribution / packaging
 .Python
